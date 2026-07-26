@@ -1,8 +1,9 @@
 libgl1
-libglib2.0-0t64
-libsm6
-libxext6
-libxrender1
-libgomp1
-libgles2
-libegl1
+libglib2.0-0
+libavformat-dev
+libavdevice-dev
+libavfilter-dev
+libavcodec-dev
+libswscale-dev
+libavutil-dev
+ffmpeg
