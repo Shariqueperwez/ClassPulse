@@ -4,11 +4,15 @@ import numpy as np
 import time
 import sys
 import os
+import threading
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from utils.attention_detector import AttentionDetector
 from utils.report_generator import generate_attention_pdf, summary_to_csv
 from utils import theme, strip_chart
+
+from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
+import av
 
 st.set_page_config(page_title="Attentiveness Monitor — ClassPulse", page_icon="▦", layout="wide")
 
@@ -108,60 +112,96 @@ def _render_students_table(states):
     return f"<table style='width:100%; border-collapse:collapse;'>{rows}</table>"
 
 
-# ── Run detection loop ─────────────────────────────────────────────────────────
+def _update_ui(frame_bgr, states):
+    """Push one processed frame + its states into all the placeholders."""
+    rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+    frame_placeholder.image(rgb, channels="RGB", use_container_width=True)
+
+    n_faces     = len(states)
+    n_attentive = sum(1 for st_ in states if st_.is_attentive)
+    frame_attentive = n_faces > 0 and n_attentive == n_faces
+
+    if n_faces == 0:
+        status_text, status_cls = "NO FACE DETECTED", "status-bad"
+    else:
+        status_text = f"{n_attentive}/{n_faces} ATTENTIVE"
+        status_cls  = "status-good" if frame_attentive else "status-bad"
+    status_placeholder.markdown(
+        f"<span class='status-line {status_cls}'>{status_text}</span>",
+        unsafe_allow_html=True,
+    )
+
+    st.session_state.attn_strip.append(frame_attentive)
+    if len(st.session_state.attn_strip) > STRIP_WINDOW:
+        st.session_state.attn_strip.pop(0)
+    svg = strip_chart.render_strip(st.session_state.attn_strip)
+    strip_wrap.markdown(f"<div class='strip-wrap'>{svg}</div>", unsafe_allow_html=True)
+
+    s = st.session_state.attn_detector.session
+    score_ph.metric("Score", f"{s.attentiveness_score}%")
+    frames_ph.metric("Frames", f"{s.total_frames:,}")
+    faces_ph.metric("Faces in frame", n_faces)
+    attentive_ph.metric("Attentive now", f"{n_attentive}/{n_faces}" if n_faces else "—")
+    reason_ph.markdown(
+        f"<span style='font-family:\"IBM Plex Mono\",monospace;font-size:0.85rem;color:{theme.INK_SOFT};'>"
+        f"{', '.join(st_.reason for st_ in states if not st_.is_attentive) or ('Attentive' if n_faces else 'No face detected')}</span>",
+        unsafe_allow_html=True,
+    )
+    students_table_ph.markdown(_render_students_table(states), unsafe_allow_html=True)
+
+
+# ── Browser-webcam video processor ─────────────────────────────────────────────
+# Runs in a background thread managed by streamlit-webrtc. It receives each frame
+# straight from the VISITOR'S browser camera (after they grant permission), runs
+# it through the existing detector, and hands the annotated frame back to be shown
+# in the video element. We store the latest result behind a lock so the main
+# Streamlit script (running in a different thread) can read it safely.
+class AttentionVideoProcessor:
+    def __init__(self, detector):
+        self.detector = detector
+        self.lock = threading.Lock()
+        self.latest_frame = None
+        self.latest_states = []
+
+    def recv(self, frame):
+        img = frame.to_ndarray(format="bgr24")
+        out_img, states = self.detector.process_frame(img)
+        with self.lock:
+            self.latest_frame = out_img
+            self.latest_states = states
+        return av.VideoFrame.from_ndarray(out_img, format="bgr24")
+
+
+RTC_CONFIGURATION = RTCConfiguration({
+    "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
+})
+
+
+# ── Run detection ────────────────────────────────────────────────────────────
 if st.session_state.attn_running and st.session_state.attn_detector:
     detector = st.session_state.attn_detector
 
     if source == "Webcam":
-        cap = cv2.VideoCapture(0)
-        if not cap.isOpened():
-            st.error("Could not open webcam. Check your camera connection and permissions.")
-            st.session_state.attn_running = False
-        else:
-            while st.session_state.attn_running:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                frame, states = detector.process_frame(frame)
-                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                frame_placeholder.image(rgb, channels="RGB", use_container_width=True)
+        st.caption("Your browser will ask permission to use your camera. Nothing is uploaded — video is processed and shown live.")
+        ctx = webrtc_streamer(
+            key="attn-webcam",
+            mode=WebRtcMode.SENDRECV,
+            rtc_configuration=RTC_CONFIGURATION,
+            video_processor_factory=lambda: AttentionVideoProcessor(detector),
+            media_stream_constraints={"video": True, "audio": False},
+            async_processing=True,
+        )
 
-                n_faces     = len(states)
-                n_attentive = sum(1 for st_ in states if st_.is_attentive)
-                frame_attentive = n_faces > 0 and n_attentive == n_faces
-
-                if n_faces == 0:
-                    status_text, status_cls = "NO FACE DETECTED", "status-bad"
-                else:
-                    status_text = f"{n_attentive}/{n_faces} ATTENTIVE"
-                    status_cls  = "status-good" if frame_attentive else "status-bad"
-                status_placeholder.markdown(
-                    f"<span class='status-line {status_cls}'>{status_text}</span>",
-                    unsafe_allow_html=True,
-                )
-
-                st.session_state.attn_strip.append(frame_attentive)
-                if len(st.session_state.attn_strip) > STRIP_WINDOW:
-                    st.session_state.attn_strip.pop(0)
-                svg = strip_chart.render_strip(st.session_state.attn_strip)
-                strip_wrap.markdown(f"<div class='strip-wrap'>{svg}</div>", unsafe_allow_html=True)
-
-                s = detector.session
-                score_ph.metric("Score", f"{s.attentiveness_score}%")
-                frames_ph.metric("Frames", f"{s.total_frames:,}")
-                faces_ph.metric("Faces in frame", n_faces)
-                attentive_ph.metric("Attentive now", f"{n_attentive}/{n_faces}" if n_faces else "—")
-                reason_ph.markdown(
-                    f"<span style='font-family:\"IBM Plex Mono\",monospace;font-size:0.85rem;color:{theme.INK_SOFT};'>"
-                    f"{', '.join(st_.reason for st_ in states if not st_.is_attentive) or ('Attentive' if n_faces else 'No face detected')}</span>",
-                    unsafe_allow_html=True,
-                )
-                students_table_ph.markdown(_render_students_table(states), unsafe_allow_html=True)
-                time.sleep(0.03)
-
-            cap.release()
-            st.session_state.attn_summary = detector.get_session_summary()
-            st.session_state.attn_running = False
+        if ctx.state.playing and ctx.video_processor:
+            while st.session_state.attn_running and ctx.state.playing:
+                with ctx.video_processor.lock:
+                    frame = ctx.video_processor.latest_frame
+                    states = ctx.video_processor.latest_states
+                if frame is not None:
+                    _update_ui(frame, states)
+                time.sleep(0.1)
+        elif not ctx.state.playing:
+            st.info("Click **START** above to allow camera access and begin the session.")
     else:
         uploaded = st.file_uploader("Upload classroom video", type=["mp4", "avi", "mov"])
         if uploaded:
@@ -180,35 +220,7 @@ if st.session_state.attn_running and st.session_state.attn_detector:
                 frame_idx += 1
                 if frame_idx % 3 == 0:
                     frame, states = detector.process_frame(frame)
-                    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    frame_placeholder.image(rgb, channels="RGB", use_container_width=True)
-
-                    n_faces     = len(states)
-                    n_attentive = sum(1 for st_ in states if st_.is_attentive)
-                    frame_attentive = n_faces > 0 and n_attentive == n_faces
-
-                    if n_faces == 0:
-                        status_text, status_cls = "NO FACE DETECTED", "status-bad"
-                    else:
-                        status_text = f"{n_attentive}/{n_faces} ATTENTIVE"
-                        status_cls  = "status-good" if frame_attentive else "status-bad"
-                    status_placeholder.markdown(
-                        f"<span class='status-line {status_cls}'>{status_text}</span>",
-                        unsafe_allow_html=True,
-                    )
-
-                    st.session_state.attn_strip.append(frame_attentive)
-                    if len(st.session_state.attn_strip) > STRIP_WINDOW:
-                        st.session_state.attn_strip.pop(0)
-                    svg = strip_chart.render_strip(st.session_state.attn_strip)
-                    strip_wrap.markdown(f"<div class='strip-wrap'>{svg}</div>", unsafe_allow_html=True)
-
-                    s = detector.session
-                    score_ph.metric("Score", f"{s.attentiveness_score}%")
-                    frames_ph.metric("Frames", f"{s.total_frames:,}")
-                    faces_ph.metric("Faces in frame", n_faces)
-                    attentive_ph.metric("Attentive now", f"{n_attentive}/{n_faces}" if n_faces else "—")
-                    students_table_ph.markdown(_render_students_table(states), unsafe_allow_html=True)
+                    _update_ui(frame, states)
                     progress.progress(min(frame_idx / total_frames, 1.0))
             cap.release()
             os.unlink(tmp_path)
