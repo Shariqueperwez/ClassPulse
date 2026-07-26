@@ -173,7 +173,29 @@ class AttentionVideoProcessor:
 
 
 RTC_CONFIGURATION = RTCConfiguration({
-    "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
+    "iceServers": [
+        {"urls": ["stun:stun.l.google.com:19302"]},
+        # Free public TURN server (Metered Open Relay Project). Needed because
+        # Streamlit Cloud's network often blocks the direct peer-to-peer path
+        # that STUN alone relies on — TURN relays the video through instead.
+        # Fine for a portfolio/demo; for heavier real-world use, get your own
+        # free TURN credentials at https://www.metered.ca/tools/openrelay/
+        {
+            "urls": "turn:openrelay.metered.ca:80",
+            "username": "openrelayproject",
+            "credential": "openrelayproject",
+        },
+        {
+            "urls": "turn:openrelay.metered.ca:443",
+            "username": "openrelayproject",
+            "credential": "openrelayproject",
+        },
+        {
+            "urls": "turn:openrelay.metered.ca:443?transport=tcp",
+            "username": "openrelayproject",
+            "credential": "openrelayproject",
+        },
+    ]
 })
 
 
