@@ -4,15 +4,11 @@ import numpy as np
 import time
 import sys
 import os
-import threading
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from utils.attention_detector import AttentionDetector
 from utils.report_generator import generate_attention_pdf, summary_to_csv
 from utils import theme, strip_chart
-
-from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
-import av
 
 st.set_page_config(page_title="Attentiveness Monitor — ClassPulse", page_icon="▦", layout="wide")
 
@@ -49,6 +45,8 @@ if "attn_summary" not in st.session_state:
     st.session_state.attn_summary = None
 if "attn_strip" not in st.session_state:
     st.session_state.attn_strip = []
+if "attn_cam_key" not in st.session_state:
+    st.session_state.attn_cam_key = 0
 
 col_ctrl1, col_ctrl2, col_ctrl3 = st.columns([1, 1, 3])
 with col_ctrl1:
@@ -61,6 +59,7 @@ with col_ctrl1:
         st.session_state.attn_running = True
         st.session_state.attn_summary = None
         st.session_state.attn_strip = []
+        st.session_state.attn_cam_key += 1
 with col_ctrl2:
     if st.button("■  Stop Session", use_container_width=True):
         st.session_state.attn_running = False
@@ -75,7 +74,7 @@ col_feed, col_stats = st.columns([3, 2])
 with col_feed:
     frame_placeholder = st.empty()
     status_placeholder = st.empty()
-    st.markdown(f"<div class='strip-label' style='margin-top:14px;'>LIVE TRACE — LAST ~20S, GREEN = ATTENTIVE</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='strip-label' style='margin-top:14px;'>ATTENTIVE / DISTRACTED — LAST {200} READINGS</div>", unsafe_allow_html=True)
     strip_wrap = st.empty()
 
 with col_stats:
@@ -91,7 +90,7 @@ with col_stats:
     st.markdown(f"<div class='strip-label' style='margin-top:10px;'>STUDENTS IN FRAME</div>", unsafe_allow_html=True)
     students_table_ph = st.empty()
 
-STRIP_WINDOW = 200  # ~ frames shown in the live strip, trimmed each frame
+STRIP_WINDOW = 200  # ~ readings shown in the strip, trimmed each time
 
 def _render_students_table(states):
     if not states:
@@ -139,7 +138,7 @@ def _update_ui(frame_bgr, states):
 
     s = st.session_state.attn_detector.session
     score_ph.metric("Score", f"{s.attentiveness_score}%")
-    frames_ph.metric("Frames", f"{s.total_frames:,}")
+    frames_ph.metric("Readings", f"{s.total_frames:,}")
     faces_ph.metric("Faces in frame", n_faces)
     attentive_ph.metric("Attentive now", f"{n_attentive}/{n_faces}" if n_faces else "—")
     reason_ph.markdown(
@@ -150,86 +149,32 @@ def _update_ui(frame_bgr, states):
     students_table_ph.markdown(_render_students_table(states), unsafe_allow_html=True)
 
 
-# ── Browser-webcam video processor ─────────────────────────────────────────────
-# Runs in a background thread managed by streamlit-webrtc. It receives each frame
-# straight from the VISITOR'S browser camera (after they grant permission), runs
-# it through the existing detector, and hands the annotated frame back to be shown
-# in the video element. We store the latest result behind a lock so the main
-# Streamlit script (running in a different thread) can read it safely.
-class AttentionVideoProcessor:
-    def __init__(self, detector):
-        self.detector = detector
-        self.lock = threading.Lock()
-        self.latest_frame = None
-        self.latest_states = []
-
-    def recv(self, frame):
-        img = frame.to_ndarray(format="bgr24")
-        out_img, states = self.detector.process_frame(img)
-        with self.lock:
-            self.latest_frame = out_img
-            self.latest_states = states
-        return av.VideoFrame.from_ndarray(out_img, format="bgr24")
-
-
-RTC_CONFIGURATION = RTCConfiguration({
-    "iceServers": [
-        {"urls": ["stun:stun.l.google.com:19302"]},
-        # Free public TURN server (Metered Open Relay Project). Needed because
-        # Streamlit Cloud's network often blocks the direct peer-to-peer path
-        # that STUN alone relies on — TURN relays the video through instead.
-        # Fine for a portfolio/demo; for heavier real-world use, get your own
-        # free TURN credentials at https://www.metered.ca/tools/openrelay/
-        {
-            "urls": "turn:openrelay.metered.ca:80",
-            "username": "openrelayproject",
-            "credential": "openrelayproject",
-        },
-        {
-            "urls": "turn:openrelay.metered.ca:443",
-            "username": "openrelayproject",
-            "credential": "openrelayproject",
-        },
-        {
-            "urls": "turn:openrelay.metered.ca:443?transport=tcp",
-            "username": "openrelayproject",
-            "credential": "openrelayproject",
-        },
-    ],
-    # Force ICE to only use TURN relay candidates and skip trying direct/UDP
-    # host candidates first. Streamlit Cloud's outbound network commonly blocks
-    # or drops the UDP paths that direct connections need, so negotiation just
-    # hangs ("Connection is taking longer than expected...") until it times out.
-    # Going straight to TURN-over-TCP avoids that wait entirely.
-    "iceTransportPolicy": "relay",
-})
-
-
 # ── Run detection ────────────────────────────────────────────────────────────
 if st.session_state.attn_running and st.session_state.attn_detector:
     detector = st.session_state.attn_detector
 
     if source == "Webcam":
-        st.caption("Your browser will ask permission to use your camera. Nothing is uploaded — video is processed and shown live.")
-        ctx = webrtc_streamer(
-            key="attn-webcam",
-            mode=WebRtcMode.SENDRECV,
-            rtc_configuration=RTC_CONFIGURATION,
-            video_processor_factory=lambda: AttentionVideoProcessor(detector),
-            media_stream_constraints={"video": True, "audio": False},
-            async_processing=True,
+        st.caption(
+            "Your browser will ask permission to use your camera. Click **Take Photo** to "
+            "analyze a reading, then **Capture Next Reading** to take another — each click "
+            "runs the full detector on that frame. Nothing is uploaded or stored."
         )
+        img_file = st.camera_input(
+            "Capture a frame",
+            key=f"attn_cam_{st.session_state.attn_cam_key}",
+            label_visibility="collapsed",
+        )
+        if img_file is not None:
+            bytes_data = img_file.getvalue()
+            arr = np.frombuffer(bytes_data, np.uint8)
+            frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            if frame is not None:
+                frame, states = detector.process_frame(frame)
+                _update_ui(frame, states)
 
-        if ctx.state.playing and ctx.video_processor:
-            while st.session_state.attn_running and ctx.state.playing:
-                with ctx.video_processor.lock:
-                    frame = ctx.video_processor.latest_frame
-                    states = ctx.video_processor.latest_states
-                if frame is not None:
-                    _update_ui(frame, states)
-                time.sleep(0.1)
-        elif not ctx.state.playing:
-            st.info("Click **START** above to allow camera access and begin the session.")
+            if st.button("📸  Capture Next Reading", use_container_width=True):
+                st.session_state.attn_cam_key += 1
+                st.rerun()
     else:
         uploaded = st.file_uploader("Upload classroom video", type=["mp4", "avi", "mov"])
         if uploaded:
