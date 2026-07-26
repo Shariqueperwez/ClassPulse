@@ -45,8 +45,6 @@ if "attn_summary" not in st.session_state:
     st.session_state.attn_summary = None
 if "attn_strip" not in st.session_state:
     st.session_state.attn_strip = []
-if "attn_cam_key" not in st.session_state:
-    st.session_state.attn_cam_key = 0
 
 col_ctrl1, col_ctrl2, col_ctrl3 = st.columns([1, 1, 3])
 with col_ctrl1:
@@ -59,7 +57,6 @@ with col_ctrl1:
         st.session_state.attn_running = True
         st.session_state.attn_summary = None
         st.session_state.attn_strip = []
-        st.session_state.attn_cam_key += 1
 with col_ctrl2:
     if st.button("■  Stop Session", use_container_width=True):
         st.session_state.attn_running = False
@@ -74,7 +71,7 @@ col_feed, col_stats = st.columns([3, 2])
 with col_feed:
     frame_placeholder = st.empty()
     status_placeholder = st.empty()
-    st.markdown(f"<div class='strip-label' style='margin-top:14px;'>ATTENTIVE / DISTRACTED — LAST {200} READINGS</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='strip-label' style='margin-top:14px;'>LIVE TRACE — LAST ~20S, GREEN = ATTENTIVE</div>", unsafe_allow_html=True)
     strip_wrap = st.empty()
 
 with col_stats:
@@ -90,7 +87,7 @@ with col_stats:
     st.markdown(f"<div class='strip-label' style='margin-top:10px;'>STUDENTS IN FRAME</div>", unsafe_allow_html=True)
     students_table_ph = st.empty()
 
-STRIP_WINDOW = 200  # ~ readings shown in the strip, trimmed each time
+STRIP_WINDOW = 200  # ~ frames shown in the live strip, trimmed each frame
 
 def _render_students_table(states):
     if not states:
@@ -111,70 +108,60 @@ def _render_students_table(states):
     return f"<table style='width:100%; border-collapse:collapse;'>{rows}</table>"
 
 
-def _update_ui(frame_bgr, states):
-    """Push one processed frame + its states into all the placeholders."""
-    rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-    frame_placeholder.image(rgb, channels="RGB", use_container_width=True)
-
-    n_faces     = len(states)
-    n_attentive = sum(1 for st_ in states if st_.is_attentive)
-    frame_attentive = n_faces > 0 and n_attentive == n_faces
-
-    if n_faces == 0:
-        status_text, status_cls = "NO FACE DETECTED", "status-bad"
-    else:
-        status_text = f"{n_attentive}/{n_faces} ATTENTIVE"
-        status_cls  = "status-good" if frame_attentive else "status-bad"
-    status_placeholder.markdown(
-        f"<span class='status-line {status_cls}'>{status_text}</span>",
-        unsafe_allow_html=True,
-    )
-
-    st.session_state.attn_strip.append(frame_attentive)
-    if len(st.session_state.attn_strip) > STRIP_WINDOW:
-        st.session_state.attn_strip.pop(0)
-    svg = strip_chart.render_strip(st.session_state.attn_strip)
-    strip_wrap.markdown(f"<div class='strip-wrap'>{svg}</div>", unsafe_allow_html=True)
-
-    s = st.session_state.attn_detector.session
-    score_ph.metric("Score", f"{s.attentiveness_score}%")
-    frames_ph.metric("Readings", f"{s.total_frames:,}")
-    faces_ph.metric("Faces in frame", n_faces)
-    attentive_ph.metric("Attentive now", f"{n_attentive}/{n_faces}" if n_faces else "—")
-    reason_ph.markdown(
-        f"<span style='font-family:\"IBM Plex Mono\",monospace;font-size:0.85rem;color:{theme.INK_SOFT};'>"
-        f"{', '.join(st_.reason for st_ in states if not st_.is_attentive) or ('Attentive' if n_faces else 'No face detected')}</span>",
-        unsafe_allow_html=True,
-    )
-    students_table_ph.markdown(_render_students_table(states), unsafe_allow_html=True)
-
-
-# ── Run detection ────────────────────────────────────────────────────────────
+# ── Run detection loop ─────────────────────────────────────────────────────────
 if st.session_state.attn_running and st.session_state.attn_detector:
     detector = st.session_state.attn_detector
 
     if source == "Webcam":
-        st.caption(
-            "Your browser will ask permission to use your camera. Click **Take Photo** to "
-            "analyze a reading, then **Capture Next Reading** to take another — each click "
-            "runs the full detector on that frame. Nothing is uploaded or stored."
-        )
-        img_file = st.camera_input(
-            "Capture a frame",
-            key=f"attn_cam_{st.session_state.attn_cam_key}",
-            label_visibility="collapsed",
-        )
-        if img_file is not None:
-            bytes_data = img_file.getvalue()
-            arr = np.frombuffer(bytes_data, np.uint8)
-            frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-            if frame is not None:
+        cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            st.error("Could not open webcam. Check your camera connection and permissions.")
+            st.session_state.attn_running = False
+        else:
+            while st.session_state.attn_running:
+                ret, frame = cap.read()
+                if not ret:
+                    break
                 frame, states = detector.process_frame(frame)
-                _update_ui(frame, states)
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                frame_placeholder.image(rgb, channels="RGB", use_container_width=True)
 
-            if st.button("📸  Capture Next Reading", use_container_width=True):
-                st.session_state.attn_cam_key += 1
-                st.rerun()
+                n_faces     = len(states)
+                n_attentive = sum(1 for st_ in states if st_.is_attentive)
+                frame_attentive = n_faces > 0 and n_attentive == n_faces
+
+                if n_faces == 0:
+                    status_text, status_cls = "NO FACE DETECTED", "status-bad"
+                else:
+                    status_text = f"{n_attentive}/{n_faces} ATTENTIVE"
+                    status_cls  = "status-good" if frame_attentive else "status-bad"
+                status_placeholder.markdown(
+                    f"<span class='status-line {status_cls}'>{status_text}</span>",
+                    unsafe_allow_html=True,
+                )
+
+                st.session_state.attn_strip.append(frame_attentive)
+                if len(st.session_state.attn_strip) > STRIP_WINDOW:
+                    st.session_state.attn_strip.pop(0)
+                svg = strip_chart.render_strip(st.session_state.attn_strip)
+                strip_wrap.markdown(f"<div class='strip-wrap'>{svg}</div>", unsafe_allow_html=True)
+
+                s = detector.session
+                score_ph.metric("Score", f"{s.attentiveness_score}%")
+                frames_ph.metric("Frames", f"{s.total_frames:,}")
+                faces_ph.metric("Faces in frame", n_faces)
+                attentive_ph.metric("Attentive now", f"{n_attentive}/{n_faces}" if n_faces else "—")
+                reason_ph.markdown(
+                    f"<span style='font-family:\"IBM Plex Mono\",monospace;font-size:0.85rem;color:{theme.INK_SOFT};'>"
+                    f"{', '.join(st_.reason for st_ in states if not st_.is_attentive) or ('Attentive' if n_faces else 'No face detected')}</span>",
+                    unsafe_allow_html=True,
+                )
+                students_table_ph.markdown(_render_students_table(states), unsafe_allow_html=True)
+                time.sleep(0.03)
+
+            cap.release()
+            st.session_state.attn_summary = detector.get_session_summary()
+            st.session_state.attn_running = False
     else:
         uploaded = st.file_uploader("Upload classroom video", type=["mp4", "avi", "mov"])
         if uploaded:
@@ -193,7 +180,35 @@ if st.session_state.attn_running and st.session_state.attn_detector:
                 frame_idx += 1
                 if frame_idx % 3 == 0:
                     frame, states = detector.process_frame(frame)
-                    _update_ui(frame, states)
+                    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    frame_placeholder.image(rgb, channels="RGB", use_container_width=True)
+
+                    n_faces     = len(states)
+                    n_attentive = sum(1 for st_ in states if st_.is_attentive)
+                    frame_attentive = n_faces > 0 and n_attentive == n_faces
+
+                    if n_faces == 0:
+                        status_text, status_cls = "NO FACE DETECTED", "status-bad"
+                    else:
+                        status_text = f"{n_attentive}/{n_faces} ATTENTIVE"
+                        status_cls  = "status-good" if frame_attentive else "status-bad"
+                    status_placeholder.markdown(
+                        f"<span class='status-line {status_cls}'>{status_text}</span>",
+                        unsafe_allow_html=True,
+                    )
+
+                    st.session_state.attn_strip.append(frame_attentive)
+                    if len(st.session_state.attn_strip) > STRIP_WINDOW:
+                        st.session_state.attn_strip.pop(0)
+                    svg = strip_chart.render_strip(st.session_state.attn_strip)
+                    strip_wrap.markdown(f"<div class='strip-wrap'>{svg}</div>", unsafe_allow_html=True)
+
+                    s = detector.session
+                    score_ph.metric("Score", f"{s.attentiveness_score}%")
+                    frames_ph.metric("Frames", f"{s.total_frames:,}")
+                    faces_ph.metric("Faces in frame", n_faces)
+                    attentive_ph.metric("Attentive now", f"{n_attentive}/{n_faces}" if n_faces else "—")
+                    students_table_ph.markdown(_render_students_table(states), unsafe_allow_html=True)
                     progress.progress(min(frame_idx / total_frames, 1.0))
             cap.release()
             os.unlink(tmp_path)
