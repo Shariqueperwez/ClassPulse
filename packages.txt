@@ -1,9 +1,2 @@
 libgl1
 libglib2.0-0
-libavformat-dev
-libavdevice-dev
-libavfilter-dev
-libavcodec-dev
-libswscale-dev
-libavutil-dev
-ffmpeg
