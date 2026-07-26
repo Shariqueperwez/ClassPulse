@@ -24,7 +24,29 @@ from streamlit_webrtc import (
 )
 
 RTC_CONFIGURATION = RTCConfiguration(
-    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+    {
+        "iceServers": [
+            {"urls": ["stun:stun.l.google.com:19302"]},
+            # Free public TURN relay (Open Relay Project) — used as a fallback
+            # when a direct STUN connection can't be established (common when
+            # the server or visitor is behind a restrictive network/firewall).
+            {
+                "urls": ["turn:openrelay.metered.ca:80"],
+                "username": "openrelayproject",
+                "credential": "openrelayproject",
+            },
+            {
+                "urls": ["turn:openrelay.metered.ca:443"],
+                "username": "openrelayproject",
+                "credential": "openrelayproject",
+            },
+            {
+                "urls": ["turn:openrelay.metered.ca:443?transport=tcp"],
+                "username": "openrelayproject",
+                "credential": "openrelayproject",
+            },
+        ]
+    }
 )
 
 st.set_page_config(page_title="Attentiveness Monitor — ClassPulse", page_icon="▦", layout="wide")
