@@ -195,7 +195,13 @@ RTC_CONFIGURATION = RTCConfiguration({
             "username": "openrelayproject",
             "credential": "openrelayproject",
         },
-    ]
+    ],
+    # Force ICE to only use TURN relay candidates and skip trying direct/UDP
+    # host candidates first. Streamlit Cloud's outbound network commonly blocks
+    # or drops the UDP paths that direct connections need, so negotiation just
+    # hangs ("Connection is taking longer than expected...") until it times out.
+    # Going straight to TURN-over-TCP avoids that wait entirely.
+    "iceTransportPolicy": "relay",
 })
 
 
