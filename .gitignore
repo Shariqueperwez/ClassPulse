@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.streamlit/secrets.toml
+.env
+.DS_Store
+
+# face models are downloaded automatically on first use (see README for licence)
+models/w600k_mbf.onnx
+models/det_500m.onnx
+models/_buffalo_sc.zip

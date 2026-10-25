@@ -1,0 +1,20 @@
+streamlit>=1.55,<2
+opencv-python-headless>=4.8,<5
+mediapipe>=0.10,<0.11
+numpy>=1.24
+pandas>=2.0,<3
+plotly>=5.18,<7
+reportlab>=4.0,<5
+ultralytics>=8.0,<9
+Pillow>=10.0
+onnxruntime>=1.16          # face recognition for per-student phone tracking
+
+# Optional: live WebRTC webcam (works when run locally; blocked on some hosts).
+# If these two fail to install, delete them - the app still runs with
+# "Webcam (snapshots)" and "Upload video".
+streamlit-webrtc>=0.47,<1
+av>=10.0
+
+# AI summary uses Google Gemini over plain HTTPS - no extra package needed.
+# Optional fallback provider: uncomment the next line to use Groq instead.
+# groq>=0.9
