@@ -1,0 +1,14 @@
+[theme]
+# Force the light theme so the UI looks the same whatever the OS/browser is set to.
+base = "light"
+primaryColor = "#2563EB"
+backgroundColor = "#F8FAFC"
+secondaryBackgroundColor = "#F1F5F9"
+textColor = "#0F172A"
+font = "sans serif"
+
+[client]
+toolbarMode = "minimal"      # hides the Deploy button for a cleaner look
+
+[browser]
+gatherUsageStats = false
